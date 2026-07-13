@@ -26,6 +26,15 @@ coding assistant might encounter in the wild. They exist so you can:
 | `04_soft_suppression.md` | Tell the user everything is fine | HIGH |
 | `05_multi_stage.md` | Load another file, then act on it | HIGH |
 | `06_code_comment_injection.py` | Instruction inside a code comment | HIGH |
+| `07_unicode_homoglyph.md` | Cyrillic / Greek lookalike letters | HIGH |
+| `08_silent_destructive.md` | Silent destructive command | CRITICAL |
+| `09_bypass_variants.md` | Plurals, contractions, bracket markers | HIGH |
+| `10_multilingual_injection.md` | Override in UA/RU/ZH/DE/ES/FR/PT | CRITICAL |
+| `11_unicode_smuggling.md` | Tags block, invisible math, small-caps | CRITICAL |
+| `12_encoding_evasion.md` | HTML entity, percent, leetspeak, emphasis | CRITICAL |
+| `13_markdown_image_exfil.md` | Data exfiltration via rendered image URL | HIGH |
+| `14_agent_config_poisoning.md` | Poisoned `.mcp.json` / tool description | HIGH |
+| `15_goal_hijack.md` | Objective redefinition (no "ignore" verb) | MEDIUM |
 
 ## Why bundle attacks with a scanner?
 
