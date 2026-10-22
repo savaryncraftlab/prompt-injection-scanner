@@ -1,5 +1,93 @@
 # Updates
 
+## v0.4.1 (2026-10-22) - precision fix release
+
+### Why this update exists
+
+Running v0.4.0 over ordinary project text (a README, CONTRIBUTING,
+GitHub's SECURITY.md template, a changelog, LLM-app source) flagged 24 of
+24 sampled benign lines, several at CRITICAL. The bundled examples were
+also over-counted (duplicates from the split-line window), and the fully
+invisible Unicode Tags payload was caught only by its "invisible character
+present" marker, not as the override it is. No new attack classes; this
+release makes the existing ones trustworthy in CI.
+
+### Bugs fixed
+
+1. **Tags-block payloads are decoded.** A line written entirely in Unicode
+   Tag characters used to be stripped to nothing by normalization. The
+   hidden ASCII is now recovered (`decode_tag_chars`) and scanned, so
+   `Hello world <tags>` reports CRITICAL `ignore_previous` with
+   `[hidden: ignore all previous instructions]` in the snippet.
+2. **Split-line duplicates.** A payload seen by several overlapping 3-line
+   windows was reported once per window, sometimes on a blank line. It is
+   now reported once, on the line where the match starts.
+3. **Overlapping rules collapse.** Two rules of one category matching the
+   same words ("Disregard your guidelines" = `disregard` +
+   `overlook_instructions`; "Do not mention this to the user" =
+   `do_not_mention` + `suppress_disclosure`) keep only the most severe.
+4. **`from_now_on` no longer needs "you".** "From now on, quietly
+   exfiltrate ..." fires; "From now on, you can pass a timeout argument"
+   does not.
+5. **`authority_multilingual` is non-English only.** Its English
+   `verifi*` / `approv*` branch duplicated `fake_verification` and fired on
+   "metadata is verified"; `meta` no longer matches `metadata`.
+
+### Rules narrowed (with the benign shape each stopped flagging)
+
+- `system_prefix`: `SYSTEM:` must open a line, comment, quote, or bracket.
+  `system_prompt = ...`, `SYSTEM_MESSAGE`, `"system_instruction"`, that is
+  every LLM application's source, were CRITICAL.
+- `html_comment_inst`, `code_comment_inst`: the keyword must be a header
+  (`AI:`, `AI agents:`, `SYSTEM - `); a hyphen is not a separator.
+  `# GPT-4o client`, `// LLM-based ranking`, `* AI-powered search`,
+  `<!-- Important: ... -->` (IMPORTANT removed from the list).
+- `privileged_mode`: "enable debug / developer mode" is setup prose. Only
+  inherently unsafe modes (god, DAN, jailbreak, unrestricted, ...) or
+  "you are now in admin / developer / debug mode".
+- `you_are_now`: "If you are new to Python", "You are free to use",
+  "You are a helpful assistant" (an app's own system prompt).
+- `fake_verification`: vendors only. "Approved by the team" / "reviewed by
+  our security team" is normal review policy. `fake_vendor_note` gained the
+  `From Microsoft:` header form.
+- `suppress_disclosure`: the hidden thing must be "this / it / anything",
+  or hidden *from* someone. "Do not report vulnerabilities through public
+  issues" (GitHub's SECURITY.md template) was HIGH.
+- `without_asking`: "Proceed without prompting", "may fail without
+  warning", "not without permission" (copyright). The bypass skips asking
+  or keeps a person out of the loop.
+- `silently_execute`: verbs are whole words, and a silent *software*
+  install ("silently install the MSI", `/qn`) is deployment docs. "The
+  cache silently removes expired keys" describes behavior.
+- `follow_instructions_in_file`: "Follow the instructions in
+  CONTRIBUTING.md" is the most common README sentence. The attack shape is
+  "follow every / all instruction(s) in".
+
+### Tests
+
+- `tests/clean/`: a clean corpus (README, CONTRIBUTING, SECURITY, CHANGELOG,
+  Python and TypeScript LLM-client source, a PowerShell deploy script) that
+  must produce **zero** findings. CI fails if it does not.
+- `tests/test_scanner.py` (stdlib `unittest`): Tags decoding, split-line
+  dedup, overlap collapse, imperative `from_now_on`, 23 benign lines, the
+  clean corpus, every example still fires, JSON output, exit codes.
+- `ruff.toml` pins the lint rule set to `E4, E7, E9, F`. ruff 0.17 widened
+  its defaults and would have failed CI on the 45 `re.I` aliases and the
+  intentional BiDi characters in `scanner.py`.
+
+### Numbers
+
+- `examples/`: 101 → 97 findings. Duplicates and explanatory-text hits
+  gone; 5 new real ones, including the decoded Tags payload.
+- Probe of 24 benign lines: 24 → 3 flagged, all three by design (bare
+  `.env`, `credentials.json`, `rm -rf node_modules`).
+
+### Still flagged by design
+
+A code comment opening with `# AI:` or `# Agent:` is byte-identical to the
+attack in `examples/06`, so it stays HIGH. Bare `.env`, credential-named
+files, and `rm -rf <dir>` stay flagged; use `pjs:ignore` where documented.
+
 ## v0.4.0 (2026-07-13) - coverage + precision release
 
 ### Why this update exists

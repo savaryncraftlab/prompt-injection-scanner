@@ -28,6 +28,7 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
+import bisect
 import html
 import json
 import re
@@ -38,7 +39,7 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import unquote
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 
 # ---------------------------------------------------------------------------
@@ -55,7 +56,10 @@ __version__ = "0.4.0"
 # 3. Invisible / default-ignorable strip — ZWSP, BiDi controls, the Unicode
 #    Tags block (U+E0000-E007F, the "ASCII smuggling" primitive), invisible
 #    math operators, and variation selectors. Removing these collapses
-#    interleaving tricks like "i<TAG>g<TAG>n<TAG>o<TAG>r<TAG>e".
+#    interleaving tricks like "i<TAG>g<TAG>n<TAG>o<TAG>r<TAG>e". Because
+#    stripping would also erase a payload written *entirely* in Tag
+#    characters, the hidden ASCII is decoded separately (decode_tag_chars)
+#    and scanned as an extra match text.
 # 4. Homoglyph fold — Cyrillic/Greek/small-cap lookalikes back to ASCII so
 #    "ignоre" (Cyrillic o) / "ignοre" (Greek o) / "ɪɢɴᴏʀᴇ" become "ignore".
 # 5. Intra-word emphasis strip — "ig*nore*" -> "ignore".
@@ -254,6 +258,19 @@ def normalize_for_match(line: str, *, fold_homoglyphs: bool = True) -> str:
         s = s.translate(_HOMOGLYPH_TABLE)
     s = _strip_intraword_emphasis(s)
     return s
+
+
+def decode_tag_chars(line: str) -> str:
+    """Return the ASCII text smuggled in Unicode Tag characters on *line*.
+
+    The Tags block mirrors printable ASCII at ``U+E0020-E007E``, so
+    ``chr(cp - 0xE0000)`` recovers the hidden character. Everything else on
+    the line is dropped: the result is only what a human cannot see.
+    """
+
+    return "".join(
+        chr(ord(ch) - 0xE0000) for ch in line if 0xE0020 <= ord(ch) <= 0xE007E
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -475,10 +492,15 @@ PATTERNS: list[Pattern] = [
     # --- Role / mode switching ---------------------------------------------
     Pattern(
         name="privileged_mode",
+        # "Enable debug / developer mode" is ordinary setup prose, so those
+        # modes only count when the text tells the reader it is *now* in one.
         regex=re.compile(
-            r"(enable|activate|enter|switch\s+to|you\s+are\s+(now\s+)?in)\s+"
-            r"(admin|developer|debug|god|root|dan|jailbreak|jailbroken|"
-            r"unrestricted|uncensored|unfiltered|sudo)[\s\-]*mode",
+            r"(enable|activate|enter|switch\s+to|turn\s+on|unlock|"
+            r"you\s+are\s+(now\s+)?in|you'?re\s+(now\s+)?in)\s+"
+            r"(god|dan|jailbreak|jailbroken|unrestricted|uncensored|unfiltered|"
+            r"evil|no[\s\-]*limits?)[\s\-]*mode"
+            r"|(you\s+are|you'?re)\s+now\s+(in|operating\s+in|running\s+in)\s+"
+            r"(admin|developer|debug|root|sudo|maintenance)[\s\-]*mode",
             re.I,
         ),
         severity="HIGH",
@@ -487,10 +509,17 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="you_are_now",
+        # Not "you are new to Python" / "you are free to use" / "You are a
+        # helpful assistant" (an app's own system prompt): the persona has to
+        # be inherently unsafe, or explicitly replaced "now" / "no longer".
         regex=re.compile(
-            r"you\s+are\s+(now\s+|no\s+longer\s+)?(a|an|the)?\s*"
-            r"(different|new|helpful|uncensored|unrestricted|malicious|"
-            r"dan|jailbroken|evil|free|rogue|unfiltered)",
+            r"(you\s+are|you'?re)\s+(now\s+)?(an?\s+)?"
+            r"(uncensored|unrestricted|jailbroken|unfiltered|evil|malicious|rogue)\b"
+            r"|(you\s+are|you'?re)\s+now\s+(an?\s+|the\s+)?(different|new|free)\s+"
+            r"(ai|assistant|model|agent|bot|persona|character|entity)\b"
+            r"|(you\s+are|you'?re)\s+no\s+longer\s+(bound|restricted|limited|"
+            r"constrained|an?\s+(ai|assistant|language\s+model)\b|claude|chatgpt)"
+            r"|(you\s+are|you'?re)\s+(now\s+)?(?-i:DAN)\b",
             re.I,
         ),
         severity="MEDIUM",
@@ -499,9 +528,13 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="from_now_on",
+        # "From now on, you can pass a timeout" is changelog prose; a standing
+        # order is "you must / will ..." or an imperative like "quietly ...".
         regex=re.compile(
-            r"(from\s+now\s+on|starting\s+now|from\s+this\s+(point|moment))"
-            r",?\s+you\s+(are|will|must|should|have\s+to|need\s+to|can|may)",
+            r"(from\s+now\s+on|starting\s+now|from\s+this\s+(point|moment))\s*,?\s+"
+            r"(you\s+(are|will|must|should|have\s+to|need\s+to)\b"
+            r"|(silently|quietly|secretly|covertly|ignore|disregard|forget|obey|"
+            r"pretend)\b)",
             re.I,
         ),
         severity="MEDIUM",
@@ -515,7 +548,9 @@ PATTERNS: list[Pattern] = [
             r"(note|message|instruction|notice|memo|alert)s?\s+"
             r"(from|by|sent\s+by)\s+"
             r"(anthropic|openai|google|meta|microsoft|mistral|"
-            r"the\s+system|your\s+creators?|the\s+developers?|the\s+vendor)",
+            r"the\s+system|your\s+creators?|the\s+developers?|the\s+vendor)(?![a-z])"
+            r"|(^|[\s>*#(\[])from\s+(anthropic|openai|google|meta|microsoft|mistral)"
+            r"\s*:",
             re.I,
         ),
         severity="HIGH",
@@ -527,8 +562,9 @@ PATTERNS: list[Pattern] = [
         regex=re.compile(
             r"(verified|approved|audited|certified|trusted|safe|reviewed|endorsed)"
             r"\s+by\s+(the\s+)?"
-            r"(anthropic|openai|google|meta|microsoft|"
-            r"the\s+system|security(\s+team)?|the\s+team|our\s+team)",
+            # Generic "the team" / "our security team" is normal review
+            # policy in CONTRIBUTING / SECURITY files, so only vendors count.
+            r"(anthropic|openai|google|meta|microsoft|the\s+system)(?![a-z])",
             re.I,
         ),
         severity="HIGH",
@@ -537,8 +573,11 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="system_prefix",
+        # A "SYSTEM:" header opening a line, comment, quote, or bracket, not
+        # an identifier (system_prompt, SYSTEM_MESSAGE, --system-prompt) and
+        # not mid-sentence prose ("Operating system: update to 14.2").
         regex=re.compile(
-            r"\bSYSTEM\s*[:\-\>_]+\s*"
+            r"(^|[\[{(<>#*/\-])\s*SYSTEM(\s*[:>]+|\s+-+>?)\s*"
             r"(override|message|instruction|command|prompt|alert|update|directive)",
             re.I,
         ),
@@ -548,13 +587,17 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="authority_multilingual",
+        # Only non-English markers: English "verified" / "approved" next to a
+        # vendor name ("Sign in with Google (verified accounts)") is normal
+        # prose. The letter guards keep "meta" from matching "metadata".
         regex=re.compile(
-            r"(anthropic|openai|google|microsoft|meta|mistral|nvidia)"
+            r"(?<![a-z])(anthropic|openai|google|microsoft|meta|mistral|nvidia)(?![a-z])"
             r"[^\n]{0,25}?(примітк\w*|примечани\w*|заувага|供应商|说明|通知|"
-            r"hinweis|verifi\w*|approv\w*|проверен\w*|одобрен\w*|"
-            r"перевірен\w*|схвален\w*|verificad\w*|v[eé]rifi\w*|gepr[uü]ft|已验证|已批准)"
+            r"hinweis|проверен\w*|одобрен\w*|"
+            r"перевірен\w*|схвален\w*|verificad\w*|vérifi\w*|gepr[uü]ft|已验证|已批准)"
             r"|(примітк\w*|примечани\w*|供应商说明|hinweis|заувага)"
-            r"[^\n]{0,25}?(anthropic|openai|google|microsoft|meta|mistral)",
+            r"[^\n]{0,25}?(?<![a-z])(anthropic|openai|google|microsoft|meta|mistral)"
+            r"(?![a-z])",
             re.I,
         ),
         severity="HIGH",
@@ -564,11 +607,15 @@ PATTERNS: list[Pattern] = [
     # --- Hidden instruction markers ----------------------------------------
     Pattern(
         name="html_comment_inst",
+        # The keyword must be a header ("AI:", "AI agents:", "SYSTEM - "), not
+        # a word in a note ("<!-- AI-generated -->", "<!-- Important: ... -->").
         regex=re.compile(
             r"<!--\s*"
             r"(SYSTEM|AI|ADMIN|INSTRUCTION|PROMPT|HIDDEN|CLAUDE|GPT|LLM|"
-            r"ASSISTANT|COPILOT|AGENT|BOT|IMPORTANT)"
-            r"\s*[:\-\>\s]",
+            r"ASSISTANT|COPILOT|AGENT|BOT)"
+            r"(\s+(agents?|assistants?|models?|tools?|bots?|instructions?|note|"
+            r"notice|message|only))?"
+            r"(\s*:|\s+-{1,2}\s)",
             re.I,
         ),
         severity="CRITICAL",
@@ -590,10 +637,14 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="code_comment_inst",
+        # A bare hyphen is not a separator: "# GPT-4o client", "// LLM-based",
+        # "* AI-powered" and "# Agent-config" are ordinary comments / headings.
         regex=re.compile(
             r"(^|\s)(#|//|/\*|\*|--|;)\s*"
             r"(SYSTEM|AI|ADMIN|CLAUDE|GPT|LLM|COPILOT|ASSISTANT|AGENT)"
-            r"\s*[:\-]",
+            r"(\s+(agents?|assistants?|models?|tools?|bots?|instructions?|note|"
+            r"notice|message|only))?"
+            r"(\s*:|\s+-{1,2}\s)",
             re.I,
         ),
         severity="HIGH",
@@ -630,15 +681,21 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="suppress_disclosure",
+        # The thing hidden must be "this / it / any of this" or be hidden
+        # *from* someone: "do not report vulnerabilities through public
+        # issues" (GitHub's SECURITY.md template) is not suppression.
         regex=re.compile(
             r"("
             r"\b(do\s+not|don'?t|never|no\s+need\s+to)\s+"
-            r"(mention|surface|reveal|disclose|flag|report|"
-            r"bring\s+(this|it|any\s+of\s+this)\s+up|"
+            r"(mention|surface|reveal|disclose)\s+"
+            r"(this|it|that|these|anything|any\s+of\s+(this|it|these))\b"
+            r"|\b(do\s+not|don'?t|never|no\s+need\s+to)\s+"
+            r"(bring\s+(this|it|any\s+of\s+this)\s+up|"
             r"say\s+anything|tell\s+(anyone|the\s+(person|human|developer)))"
             r"|\bkeep\s+(this|it|that)\s+(to\s+yourself|between\s+us|quiet|secret|hidden)"
-            r"|\b(do\s+not|don'?t)\s+(mention|reveal|surface|disclose|flag)\b"
-            r"[^\n]{0,40}?\b(the\s+)?(person|human|developer|maintainer|operator)\b"
+            r"|\b(do\s+not|don'?t|never)\s+(mention|reveal|surface|disclose)\b"
+            r"[^\n]{0,40}?\bto\s+(the\s+|any\s+)?"
+            r"(users?|person|human|developer|maintainer|operator)s?\b"
             r")",
             re.I,
         ),
@@ -648,12 +705,21 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="without_asking",
+        # "Proceed without prompting", "may fail without warning" and
+        # "not to be reproduced without permission" are normal docs; the
+        # bypass skips asking, or keeps a *person* out of the loop.
         regex=re.compile(
-            r"without\s+"
-            r"(asking|confirming|notifying|warning|alerting|prompting|"
-            r"(the\s+|any\s+)?(user|users)"
-            r"('s)?\s*(consent|confirmation|permission|approval|knowledge)?|"
-            r"(prior\s+|explicit\s+|any\s+)?(consent|permission|approval))",
+            r"without\s+("
+            r"(asking|confirming)\b"
+            r"|checking\s+with\b"
+            r"|(notifying|warning|alerting|telling|informing|prompting|consulting)\s+"
+            r"(the\s+|any\s+)?(users?|humans?|developers?|operators?|maintainers?|"
+            r"them|anyone)\b"
+            r"|(the\s+|any\s+)?(users?|humans?|developers?|operators?)('s|s')?\s+"
+            r"(consent|confirmation|permission|approval|knowledge)\b"
+            r"|(the\s+|any\s+)?(users?|humans?|developers?|operators?)\s+"
+            r"(knowing|noticing|seeing|realizing)\b"
+            r")",
             re.I,
         ),
         severity="HIGH",
@@ -684,11 +750,17 @@ PATTERNS: list[Pattern] = [
             r"(silently|quietly|secretly|discreetly|stealthily|invisibly|covertly|"
             r"without\s+(a\s+)?(trace|notice)|in\s+the\s+background)\s+"
             r"(?:go\s+ahead\s+and\s+|just\s+|then\s+|now\s+)?"
+            # Imperative verbs only (\b): "the cache silently removes expired
+            # keys" describes behavior. A silent *software* install
+            # ("silently install the MSI") is standard deployment docs.
             r"(execute|run|perform|read|send|upload|transmit|exfiltrate|"
-            r"delete|remove|modify|write|overwrite|install|deploy|"
+            r"delete|remove|modify|write|overwrite|deploy|"
+            r"install(?!\s+(the|a|an|this|that|your)?\s*(msi|exe|installer|package|"
+            r"app|application|software|program|client|agent|driver|update|"
+            r"extension|plugin|font|tool)s?\b)|"
             r"copy|download|fetch|post|submit|leak|dump|capture|"
             r"append|patch|replace|gather|collect|harvest|scrape|enumerate|"
-            r"forward|relay|hand\s+off|apply|push|commit|share)",
+            r"forward|relay|hand\s+off|apply|push|commit|share)\b",
             re.I,
         ),
         severity="CRITICAL",
@@ -698,9 +770,11 @@ PATTERNS: list[Pattern] = [
     # --- Multi-stage / indirect instruction loading ------------------------
     Pattern(
         name="follow_instructions_in_file",
+        # "Follow the instructions in CONTRIBUTING.md" is the most common
+        # README sentence; the attack shape is "follow EVERY instruction".
         regex=re.compile(
             r"(follow|apply|execute|implement|obey|adhere\s+to|carry\s+out)\s+"
-            r"(every|all|the|each|any)\s+instructions?\s+"
+            r"(every|all|each|any)\s+(of\s+the\s+)?instructions?\s+"
             r"(in|from|inside|within|contained\s+in|listed\s+in)",
             re.I,
         ),
@@ -1209,9 +1283,12 @@ def scan_file(path: Path) -> Iterator[Finding]:
         normalize_for_match(line, fold_homoglyphs=False) for line in raw_lines
     ]
     leet_lines = [_apply_leet(line) for line in normalized_lines]
+    hidden_lines = [normalize_for_match(decode_tag_chars(line)) for line in raw_lines]
 
     seen: set[tuple[int, str]] = set()
-    findings: list[Finding] = []
+    # Each finding carries the (start, end) of its match within its line, or
+    # None when that position is not comparable (split-line / hidden text).
+    findings: list[tuple[Finding, tuple[int, int] | None]] = []
 
     def add_finding(
         *,
@@ -1220,6 +1297,7 @@ def scan_file(path: Path) -> Iterator[Finding]:
         pattern: Pattern,
         snippet: str,
         raw_line: str,
+        span: tuple[int, int] | None,
     ) -> None:
         if line in ignored_lines:
             return
@@ -1227,20 +1305,20 @@ def scan_file(path: Path) -> Iterator[Finding]:
         if key in seen:
             return
         seen.add(key)
-        findings.append(
-            Finding(
-                file=path,
-                line=line,
-                column=column,
-                pattern=pattern,
-                snippet=snippet,
-                severity=adjust_severity(pattern, raw_line),
-            )
+        finding = Finding(
+            file=path,
+            line=line,
+            column=column,
+            pattern=pattern,
+            snippet=snippet,
+            severity=adjust_severity(pattern, raw_line),
         )
+        findings.append((finding, span))
 
     for line_num, raw_line in enumerate(raw_lines, start=1):
         normalized_line = normalized_lines[line_num - 1]
         leet_line = leet_lines[line_num - 1]
+        hidden_text = hidden_lines[line_num - 1]
         for pattern in PATTERNS:
             if pattern.name in RAW_SCAN_PATTERN_NAMES:
                 scan_texts = (raw_line,)
@@ -1262,43 +1340,97 @@ def scan_file(path: Path) -> Iterator[Finding]:
                         pattern=pattern,
                         snippet=raw_line.strip()[:140],
                         raw_line=raw_line,
+                        span=match.span(),
                     )
                     break
+            else:
+                # A payload written entirely in Tag characters is invisible
+                # and stripped by normalization: scan the decoded text too.
+                if not hidden_text or pattern.name in RAW_SCAN_PATTERN_NAMES:
+                    continue
+                match = pattern.regex.search(hidden_text)
+                if match:
+                    first_tag = next(
+                        i
+                        for i, ch in enumerate(raw_line)
+                        if 0xE0020 <= ord(ch) <= 0xE007E
+                    )
+                    visible = raw_line.translate(_STRIP_TABLE).strip()
+                    add_finding(
+                        line=line_num,
+                        column=first_tag + 1,
+                        pattern=pattern,
+                        snippet=f"{visible} [hidden: {hidden_text}]"[:140],
+                        raw_line=raw_line,
+                        span=None,
+                    )
 
     # Catch common split-line payloads like:
     #   Ignore
     #   previous instructions
+    # The finding goes on the line where the match starts, so a payload seen
+    # by several overlapping windows (or by a window that opens on a blank
+    # line) is reported once, at the right place.
     window_size = 3
     for start in range(len(normalized_lines)):
         segment = normalized_lines[start : start + window_size]
-        if not segment:
+        merged = " ".join(segment)
+        if not merged.strip():
             continue
-        merged = " ".join(segment).strip()
-        if not merged:
-            continue
-        raw_snippet = " / ".join(
-            line.strip()
-            for line in raw_lines[start : start + window_size]
-            if line.strip()
-        )
-        raw_snippet = raw_snippet[:140]
-        if not raw_snippet:
-            continue
+        line_starts: list[int] = []
+        offset = 0
+        for text in segment:
+            line_starts.append(offset)
+            offset += len(text) + 1
         for pattern in PATTERNS:
             if pattern.name not in MULTILINE_PATTERN_NAMES:
                 continue
             if any(pattern.regex.search(line) for line in segment):
                 continue
-            if pattern.regex.search(merged):
-                add_finding(
-                    line=start + 1,
-                    column=1,
-                    pattern=pattern,
-                    snippet=raw_snippet,
-                    raw_line=raw_lines[start],
-                )
+            match = pattern.regex.search(merged)
+            if not match:
+                continue
+            first = bisect.bisect_right(line_starts, match.start()) - 1
+            last = bisect.bisect_right(line_starts, match.end() - 1) - 1
+            first_line = start + first + 1
+            last_line = start + last + 1
+            if any((n, pattern.name) in seen for n in range(first_line, last_line + 1)):
+                continue
+            raw_snippet = " / ".join(
+                line.strip()
+                for line in raw_lines[first_line - 1 : last_line]
+                if line.strip()
+            )
+            add_finding(
+                line=first_line,
+                column=match.start() - line_starts[first] + 1,
+                pattern=pattern,
+                snippet=raw_snippet[:140],
+                raw_line=raw_lines[first_line - 1],
+                span=None,
+            )
 
-    yield from findings
+    # Two rules of one category firing on the same words of a line describe
+    # one attack ("Disregard your guidelines" is both `disregard` and
+    # `overlook_instructions`): keep the most severe, then the earliest rule.
+    by_severity = sorted(findings, key=lambda f: -SEVERITY_RANK[f[0].severity])
+    kept: list[tuple[Finding, tuple[int, int]]] = []
+    dropped: set[int] = set()
+    for finding, span in by_severity:
+        if span is None:
+            continue
+        if any(
+            other.line == finding.line
+            and other.pattern.category == finding.pattern.category
+            and span[0] < other_span[1]
+            and other_span[0] < span[1]
+            for other, other_span in kept
+        ):
+            dropped.add(id(finding))
+        else:
+            kept.append((finding, span))
+
+    yield from (f for f, _ in findings if id(f) not in dropped)
 
 
 # ---------------------------------------------------------------------------

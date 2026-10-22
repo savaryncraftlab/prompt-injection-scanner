@@ -71,7 +71,17 @@ python scanner.py ~/projects/my-cool-app
 No dependencies beyond Python 3.10+. A single file (`scanner.py`), 51
 detection patterns, MIT licensed, easy to audit.
 
-## Latest update (v0.4.0 — coverage + precision)
+## Latest update (v0.4.1 — precision fix)
+
+Running v0.4.0 over ordinary project text flagged every sampled benign line
+(`system_prompt = ...` was CRITICAL). v0.4.1 narrows nine rules to the
+attack shape, fixes split-line duplicates, decodes fully invisible Unicode
+Tags payloads instead of only marking them, and adds a clean corpus
+([`tests/clean/`](./tests/clean/)) that CI requires to produce zero
+findings. Details and the benign shape each rule stopped flagging:
+[`docs/UPDATES.md`](./docs/UPDATES.md).
+
+## v0.4.0 — coverage + precision
 
 An adversarial audit (every payload run through the real scanner) plus a
 threat-landscape review drove this release:
@@ -254,7 +264,11 @@ Found an injection pattern the scanner missed? Open a PR:
 1. Add a minimal reproducible sample to `examples/`.
 2. Add a `Pattern` to `scanner.py` that catches it.
 3. Run `python scanner.py examples/` and verify it's detected.
-4. Open a PR with the new file + pattern. No extra process.
+4. Run `python scanner.py tests/clean/` and verify it still exits `0`. If
+   your pattern fires on the clean corpus, narrow it to the attack shape;
+   if you found a benign sentence the scanner flags, add it to the corpus.
+5. Run `python -m unittest discover -s tests`, then open a PR with the new
+   file + pattern. No extra process.
 
 New categories of attack are especially welcome. Obfuscation tricks
 (unicode homoglyphs, right-to-left overrides, invisible code points) are

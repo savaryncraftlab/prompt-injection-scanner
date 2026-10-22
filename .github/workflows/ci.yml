@@ -19,9 +19,9 @@ jobs:
       - name: Install ruff
         run: pip install ruff
       - name: Lint
-        run: ruff check scanner.py
+        run: ruff check scanner.py tests/test_scanner.py
       - name: Format check
-        run: ruff format --check scanner.py
+        run: ruff format --check scanner.py tests/test_scanner.py
 
   self-test:
     name: Self-test (scanner catches bundled examples)
@@ -37,6 +37,23 @@ jobs:
         run: |
           python scanner.py --version
           python scanner.py --help > /dev/null
+
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Precision - clean corpus produces zero findings
+        shell: bash
+        run: |
+          set +e
+          python scanner.py tests/clean --no-color > clean.txt
+          CODE=$?
+          set -e
+          cat clean.txt
+          if [ "$CODE" -ne 0 ]; then
+            echo "FAIL: expected 0 findings on tests/clean, scanner exited $CODE"
+            exit 1
+          fi
+          echo "OK: clean corpus is silent"
 
       - name: Regression — every example still triggers a finding
         shell: bash
