@@ -35,6 +35,7 @@ coding assistant might encounter in the wild. They exist so you can:
 | `13_markdown_image_exfil.md` | Data exfiltration via rendered image URL | HIGH |
 | `14_agent_config_poisoning.md` | Poisoned `.mcp.json` / tool description | HIGH |
 | `15_goal_hijack.md` | Objective redefinition (no "ignore" verb) | MEDIUM |
+| `16_polish_injection.md` | Override, suppression, silent action, fake vendor in Polish | CRITICAL |
 
 ## Why bundle attacks with a scanner?
 

@@ -39,7 +39,7 @@ from pathlib import Path
 from typing import Iterator
 from urllib.parse import unquote
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"
 
 
 # ---------------------------------------------------------------------------
@@ -398,13 +398,17 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="forget_synonyms",
+        # A bare "memory" / "context" is too common in tech prose ("flush the
+        # memory buffer", "a dying disk shouldn't erase your household
+        # memory"): it has to be *your* / *all* memory, instructions, ...
         regex=re.compile(
             r"\b(wipe|erase|clear|blank\s+out|purge|flush|drop|discard)\b"
             r"[^\n]{0,40}?\b("
             r"from\s+(your\s+)?memory|what(ever)?\s+you\s+(were\s+)?(given|told)|"
             r"(previous|prior|earlier|preceding)\s+"
             r"(setup|guidance|instructions?|context|rules?)|"
-            r"instructions?|guidance|guidelines?|context|memory"
+            r"(your|all(\s+(your|the|of\s+the))?|any)\s+"
+            r"(instructions?|guidance|guidelines?|context|memory)"
             r")\b",
             re.I,
         ),
@@ -474,8 +478,10 @@ PATTERNS: list[Pattern] = [
     Pattern(
         name="goal_hijack",
         regex=re.compile(
+            # "your" only: it addresses the reader. "The real goal is often to
+            # flip the call" is ordinary prose about someone else.
             r"("
-            r"\b(your|the)\s+(real|true|actual|genuine|primary|only|sole|hidden|secret)\s+"
+            r"\byour\s+(real|true|actual|genuine|primary|only|sole|hidden|secret)\s+"
             r"(objective|goal|task|purpose|mission|job|directive|aim)s?\b"
             r"[^\n]{0,40}?\b(is|are|here|now|becomes?|will\s+be|matters?)\b"
             r"|what\s+you(?:'re|\s+are)\s+(really|actually|truly)\s+"
@@ -597,7 +603,16 @@ PATTERNS: list[Pattern] = [
             r"перевірен\w*|схвален\w*|verificad\w*|vérifi\w*|gepr[uü]ft|已验证|已批准)"
             r"|(примітк\w*|примечани\w*|供应商说明|hinweis|заувага)"
             r"[^\n]{0,25}?(?<![a-z])(anthropic|openai|google|microsoft|meta|mistral)"
-            r"(?![a-z])",
+            r"(?![a-z])"
+            # PL: "notatka / uwaga od Anthropic", "zweryfikowane przez Anthropic".
+            # Tighter than the other languages: "od" / "przez" must follow, so
+            # "Uwaga: wymaga konta Google" (needs a Google account) passes.
+            r"|\b(notatka|uwaga|komunikat|wiadomo[sś][cć]|informacja|instrukcja)\s+od\s+"
+            r"(firmy\s+|zespo[lł]u\s+)?(anthropic|openai|google|microsoft|meta|mistral)"
+            r"(?![a-z])"
+            r"|\b(zweryfikowan\w*|zatwierdzon\w*|sprawdzon\w*|potwierdzon\w*|audytowan\w*)"
+            r"\s+przez\s+(zesp[oó][lł]\s+|firm[eę]\s+)?"
+            r"(anthropic|openai|google|microsoft|meta|mistral)(?![a-z])",
             re.I,
         ),
         severity="HIGH",
@@ -624,11 +639,14 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="bracket_marker",
+        # The keyword must be a header with ":" or " - " and content after it:
+        # "(internal)" or "(AI)" in prose and "(AI-powered)" are not markers,
+        # "[OVERRIDE: ...]" and "(ADMIN COMMAND: ...)" are.
         regex=re.compile(
             r"[\[\{\(]\s*"
             r"(HIDDEN|SYSTEM|AI|INSTRUCTION|PROMPT|INTERNAL|SECRET|ADMIN|"
             r"OVERRIDE|BYPASS|EXECUTE|DIRECTIVE)"
-            r"\s*[:\-\]\}\)]",
+            r"(\s+\w+)?(\s*:|\s+-{1,2}\s)\s*\S",
             re.I,
         ),
         severity="HIGH",
@@ -683,8 +701,13 @@ PATTERNS: list[Pattern] = [
         name="suppress_disclosure",
         # The thing hidden must be "this / it / any of this" or be hidden
         # *from* someone: "do not report vulnerabilities through public
-        # issues" (GitHub's SECURITY.md template) is not suppression.
+        # issues" (GitHub's SECURITY.md template) is not suppression. The
+        # negation must open a clause (an order), so "You dont mention
+        # anything about salary" and "I would never tell anyone" (a story)
+        # do not match; nor does the idiom "keep it to yourself".
         regex=re.compile(
+            r"(?:^\s*|(?<=[.!?:;\"'(\[{>*\-—])\s*|(?<=\bplease\s)|(?<=\band\s)"
+            r"|(?<=\bthen\s)|(?<=\bso\s))"
             r"("
             r"\b(do\s+not|don'?t|never|no\s+need\s+to)\s+"
             r"(mention|surface|reveal|disclose)\s+"
@@ -692,11 +715,12 @@ PATTERNS: list[Pattern] = [
             r"|\b(do\s+not|don'?t|never|no\s+need\s+to)\s+"
             r"(bring\s+(this|it|any\s+of\s+this)\s+up|"
             r"say\s+anything|tell\s+(anyone|the\s+(person|human|developer)))"
-            r"|\bkeep\s+(this|it|that)\s+(to\s+yourself|between\s+us|quiet|secret|hidden)"
             r"|\b(do\s+not|don'?t|never)\s+(mention|reveal|surface|disclose)\b"
             r"[^\n]{0,40}?\bto\s+(the\s+|any\s+)?"
             r"(users?|person|human|developer|maintainer|operator)s?\b"
-            r")",
+            r")"
+            r"|\bkeep\s+(this|it|that)\s+((secret|hidden|quiet)\s+)?(between\s+us\b|"
+            r"from\s+(the\s+)?(users?|humans?|developers?|operators?|person)\b)",
             re.I,
         ),
         severity="HIGH",
@@ -707,11 +731,18 @@ PATTERNS: list[Pattern] = [
         name="without_asking",
         # "Proceed without prompting", "may fail without warning" and
         # "not to be reproduced without permission" are normal docs; the
-        # bypass skips asking, or keeps a *person* out of the loop.
+        # bypass skips asking, or keeps a *person* out of the loop. A bare
+        # "without asking" needs an imperative action before it ("proceed /
+        # do this / should be followed without asking"): "they put it on our
+        # calendar without asking" is a story.
         regex=re.compile(
-            r"without\s+("
-            r"(asking|confirming)\b"
-            r"|checking\s+with\b"
+            r"\b(proceed|continue|execute|run|act|do\s+(this|it|that|so|everything)|"
+            r"install|delete|remove|send|apply|merge|push|commit|deploy|follow(ed)?|"
+            r"perform|approve|accept|answer|reply|respond|overwrite|modify|change|"
+            r"edit|update|upload|fetch|write|share|forward|post|submit|carry\s+out)\b"
+            r"[^\n.;!?]{0,40}?\bwithout\s+(asking|confirming)\b"
+            r"|without\s+("
+            r"checking\s+with\b"
             r"|(notifying|warning|alerting|telling|informing|prompting|consulting)\s+"
             r"(the\s+|any\s+)?(users?|humans?|developers?|operators?|maintainers?|"
             r"them|anyone)\b"
@@ -826,19 +857,77 @@ PATTERNS: list[Pattern] = [
     ),
     Pattern(
         name="ignore_multilingual_latin",
+        # The negation guards keep reminders ("No ignores las reglas", "Nie
+        # zapomnij o zasadach bezpieczeństwa") from matching.
         regex=re.compile(
+            r"(?<!\bno )(?<!\bne )(?<!\bnicht )"
             r"\b(?:ignor[ae]|ignore[zr]?|ignorez|ignorieren?|ignoriere|missachte|"
             r"vergiss|desestima|desconsider[ae]|desconsidere)\b"
             r"[^\n]{0,30}?\b(?:"
             r"instrucci[oó]n\w*|instru[cç][oõ]\w*|istruzion\w*|"
             r"anweisung\w*|vorherig\w*|vorgaben|"
             r"pr[eé]c[eé]dent\w*|consignes?|r[eè]gles?|reglas|regras|"
-            r"anterior\w*|precedent\w*|sicherheit\w*)\b",
+            r"anterior\w*|precedent\w*|sicherheit\w*)\b"
+            # PL: the noun must be an instruction / rule / restriction, because
+            # "poprzedni" alone is everyday ("Zapomnij poprzednie hasło"). The
+            # case endings are spelled out so the adverbs "regularnie" and
+            # "zasadniczo" do not count as "reguły" / "zasady". "Pomiń" (skip)
+            # is left out: "Pomiń instrukcje instalacji" is a normal doc line.
+            r"|(?<!\bnie )\b(?:z?ignoruj(?:cie)?|zlekcewa[zż](?:cie)?|zapomnij(?:cie)?|"
+            r"nie\s+zwracaj(?:cie)?\s+uwagi\s+na|nie\s+przestrzegaj(?:cie)?|"
+            r"nie\s+stosuj(?:cie)?\s+si[eę]\s+do)\b"
+            r"[^\n]{0,30}?\b(?:instrukcj(?:a|e|i|ę|ą|ach|ami|om)|"
+            r"zasad(?:y|ę|ami|ach|om|a|zie)?|polece[nń](?:ia|iu|iem|iami|iach|ie)?|"
+            r"wytyczn(?:e|ych|ymi|ym|ej|ą|a)|regu[lł](?:[yęa]|ami|ach|om)?|"
+            r"ogranicze[nń](?:ia|iami|iach|iom|ie)?|"
+            r"zabezpiecze[nń](?:ia|iami|iach|iom|ie)?)\b",
             re.I,
         ),
         severity="HIGH",
-        description="Non-English instruction override (Romance / German)",
+        description="Non-English instruction override (Romance / German / Polish)",
         category="override",
+    ),
+    Pattern(
+        name="suppress_multilingual",
+        # PL / UA / RU "do not tell the user". Verbs end with \b so a sentence
+        # that describes behavior ("aplikacja nie informuje użytkownika") does
+        # not match the imperative ("nie informuj użytkownika").
+        regex=re.compile(
+            # "show" is left out: "nie pokazuj użytkownikowi surowych błędów"
+            # (do not show raw errors to the user) is security advice.
+            r"\bnie\s+(m[oó]w|wspominaj|informuj|zdradzaj|ujawniaj|ostrzegaj)\b"
+            r"[^\n]{0,25}?\bu[zż]ytkownik\w*"
+            r"|\bне\s+(кажи|говори|повідомляй|згадуй|розповідай|попереджай)\b"
+            r"[^\n]{0,25}?\bкористувач\w*"
+            r"|\bне\s+(говори|сообщай|упоминай|рассказывай|предупреждай)\b"
+            r"[^\n]{0,25}?\bпользовател\w*",
+            re.I,
+        ),
+        severity="HIGH",
+        description="Non-English instruction to hide information from the user",
+        category="suppression",
+    ),
+    Pattern(
+        name="silently_multilingual",
+        # PL / UA / RU "quietly send / delete / read ...": the adverb and an
+        # imperative verb, at most one word apart.
+        # "w tle" (in the background) is left out: "W tle uruchom serwer" is
+        # how Polish docs say "run the server in the background".
+        regex=re.compile(
+            r"\b(po\s+cichu|dyskretnie|niezauwa[zż]alnie|potajemnie)\s+(?:\w+\s+)?"
+            r"(wy[sś]lij|prze[sś]lij|usu[nń]|odczytaj|skopiuj|wykonaj|uruchom|pobierz|"
+            r"zapisz|zmodyfikuj|zainstaluj|zbierz|przeka[zż])\b"
+            r"|\b(тихо|непомітно|потай|таємно|приховано)\s+(?:\w+\s+)?"
+            r"(надішли|відправ|перешли|видали|прочитай|зчитай|скопіюй|виконай|запусти|"
+            r"завантаж|зміни|встанови|збери|передай)\b"
+            r"|\b(тихо|незаметно|тайно|скрытно)\s+(?:\w+\s+)?"
+            r"(отправь|перешли|удали|прочитай|считай|скопируй|выполни|запусти|скачай|"
+            r"измени|установи|собери|передай)\b",
+            re.I,
+        ),
+        severity="CRITICAL",
+        description="Non-English instruction to act silently",
+        category="suppression",
     ),
     # --- Exfiltration channels ---------------------------------------------
     Pattern(
@@ -1080,6 +1169,8 @@ MULTILINGUAL_PATTERN_NAMES = {
     "ignore_multilingual_nonlatin",
     "ignore_multilingual_latin",
     "authority_multilingual",
+    "suppress_multilingual",
+    "silently_multilingual",
 }
 
 # Patterns detecting the raw presence of an invisible / control character.
@@ -1216,6 +1307,82 @@ MAX_FILE_SIZE_BYTES = 2_000_000
 _PRAGMA_LINE = re.compile(r"pjs:\s*ignore(?!-file)\b", re.I)
 _PRAGMA_FILE = re.compile(r"pjs:\s*ignore-file\b", re.I)
 
+# Files whose contents are secrets by nature. Findings in them are still
+# reported (a hidden instruction in a .env comment is exactly what we look
+# for), but the snippet masks the value side of each line so a CI log or
+# report.json never carries the secret itself.
+_SECRET_FILENAME = re.compile(
+    r"^\.env|(^|[._-])(credentials?|secrets?|tokens?|passwords?|api[_-]?keys?)([._-]|$)"
+    r"|\.(pem|key|p12|pfx)$",
+    re.I,
+)
+_ENV_ASSIGNMENT = re.compile(r"^(\s*(?:export\s+)?[\w.\-]+\s*=\s*)\S.*$")
+_KEY_VALUE = re.compile(r"""(["']?[\w.\-]+["']?\s*:\s*)("[^"]*"?|'[^']*'?|[^,}\]]+)""")
+_SECRET_TOKEN = re.compile(r"[A-Za-z0-9+/=_\-]{20,}")
+_COMMENT_LINE = re.compile(r"^\s*(#|//|;|<!--)")
+
+
+def is_secret_file(path: Path) -> bool:
+    """Return True for .env*, credential / token / key files."""
+
+    return bool(_SECRET_FILENAME.search(path.name))
+
+
+def redact_secret_line(line: str) -> str:
+    """Mask what could be a secret on a line of a secret file.
+
+    ``KEY=value`` loses everything after ``=``; every ``"key": "value"`` /
+    ``key: value`` pair keeps its key and loses its value, which also covers
+    one-line JSON blobs. Comment lines, where an injected instruction would
+    sit, keep their words; on every line a remaining 20+ character
+    key-shaped token (hex, base64, JWT, ``sk-...``) is masked.
+    """
+
+    if not _COMMENT_LINE.match(line):
+        assignment = _ENV_ASSIGNMENT.match(line)
+        if assignment:
+            return f"{assignment.group(1)}[redacted]"
+        line = _KEY_VALUE.sub(lambda m: f"{m.group(1)}[redacted]", line)
+    return _SECRET_TOKEN.sub("[redacted]", line)
+
+
+# Zero-width characters are legitimate inside emoji sequences (the joiner in
+# "🤷🏻‍♂️"), between letters of scripts that use joiners (Arabic, Persian,
+# Indic), and as line-break hints in CJK text. The "hidden text" shape is an
+# invisible character touching a Latin / Cyrillic / Greek letter or digit.
+_ZERO_WIDTH = frozenset("​‌‍⁠⁡⁢⁣⁤﻿")
+
+
+def _plain_alnum(ch: str) -> bool:
+    return ch.isalnum() and ord(ch) < 0x0530
+
+
+def _mask_benign_invisibles(line: str) -> str:
+    """Replace zero-width characters that sit in legitimate context with a
+    space, keeping positions, so ``zero_width_char`` sees only suspects.
+
+    Suspect: an invisible math operator (no use in prose), a zero-width
+    character *between* two Latin / Cyrillic / Greek letters or digits
+    (``ig<ZWSP>nore`` splits a keyword), or a run of two or more invisibles
+    (zero-width steganography). Everything else is benign: the joiner in an
+    emoji sequence, ZWNJ in Persian / Indic text, or the ZWSP Reddit puts at
+    the start of a paragraph.
+    """
+
+    if not any(ch in _ZERO_WIDTH for ch in line):
+        return line
+    n = len(line)
+    chars = list(line)
+    for i, ch in enumerate(line):
+        if ch not in _ZERO_WIDTH or "⁡" <= ch <= "⁤":
+            continue
+        left = line[i - 1] if i > 0 else ""
+        right = line[i + 1] if i + 1 < n else ""
+        in_run = left in _ZERO_WIDTH or right in _ZERO_WIDTH
+        if not in_run and not (_plain_alnum(left) and _plain_alnum(right)):
+            chars[i] = " "
+    return "".join(chars)
+
 
 def should_scan_file(path: Path, extensions: set[str]) -> bool:
     """Return True when a file should be scanned with current defaults."""
@@ -1256,7 +1423,9 @@ def scan_file(path: Path) -> Iterator[Finding]:
     Unicode homoglyphs, strips zero-width / BiDi / Tag characters, and
     applies NFKC. A separate leet-folded text is matched by text-instruction
     patterns only. The original line is still used for the user-facing
-    snippet so the report shows the attack as written.
+    snippet so the report shows the attack as written, except in secret
+    files (``.env*``, ``credentials.json``, ...), where values are masked, and
+    for long base64 blobs, which are replaced by their length.
 
     ``pjs:ignore`` on a line silences that line; ``pjs:ignore-file`` in the
     first 15 lines skips the whole file.
@@ -1265,7 +1434,9 @@ def scan_file(path: Path) -> Iterator[Finding]:
     try:
         if path.stat().st_size > MAX_FILE_SIZE_BYTES:
             return
-        content = path.read_text(encoding="utf-8", errors="replace")
+        # utf-8-sig drops a leading BOM (Notepad, PowerShell Out-File), which
+        # would otherwise be reported as a zero-width character on line 1.
+        content = path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return
 
@@ -1284,6 +1455,13 @@ def scan_file(path: Path) -> Iterator[Finding]:
     ]
     leet_lines = [_apply_leet(line) for line in normalized_lines]
     hidden_lines = [normalize_for_match(decode_tag_chars(line)) for line in raw_lines]
+    # Snippets are built from display_lines: the raw text, except in files
+    # that hold secrets by nature, where the value side of each line is masked.
+    display_lines = (
+        [redact_secret_line(line) for line in raw_lines]
+        if is_secret_file(path)
+        else raw_lines
+    )
 
     seen: set[tuple[int, str]] = set()
     # Each finding carries the (start, end) of its match within its line, or
@@ -1305,12 +1483,17 @@ def scan_file(path: Path) -> Iterator[Finding]:
         if key in seen:
             return
         seen.add(key)
+        if pattern.name == "long_base64_block":
+            # The matched blob may itself be a key: report its size, not it.
+            snippet = pattern.regex.sub(
+                lambda m: f"[base64 {len(m.group())} chars]", snippet
+            )
         finding = Finding(
             file=path,
             line=line,
             column=column,
             pattern=pattern,
-            snippet=snippet,
+            snippet=snippet[:140],
             severity=adjust_severity(pattern, raw_line),
         )
         findings.append((finding, span))
@@ -1319,8 +1502,12 @@ def scan_file(path: Path) -> Iterator[Finding]:
         normalized_line = normalized_lines[line_num - 1]
         leet_line = leet_lines[line_num - 1]
         hidden_text = hidden_lines[line_num - 1]
+        display_line = display_lines[line_num - 1]
+        zero_width_text = _mask_benign_invisibles(raw_line)
         for pattern in PATTERNS:
-            if pattern.name in RAW_SCAN_PATTERN_NAMES:
+            if pattern.name == "zero_width_char":
+                scan_texts = (zero_width_text,)
+            elif pattern.name in RAW_SCAN_PATTERN_NAMES:
                 scan_texts = (raw_line,)
             elif pattern.name in MULTILINGUAL_PATTERN_NAMES:
                 scan_texts = (nofold_lines[line_num - 1],)
@@ -1338,7 +1525,7 @@ def scan_file(path: Path) -> Iterator[Finding]:
                         line=line_num,
                         column=match.start() + 1,
                         pattern=pattern,
-                        snippet=raw_line.strip()[:140],
+                        snippet=display_line.strip(),
                         raw_line=raw_line,
                         span=match.span(),
                     )
@@ -1355,12 +1542,12 @@ def scan_file(path: Path) -> Iterator[Finding]:
                         for i, ch in enumerate(raw_line)
                         if 0xE0020 <= ord(ch) <= 0xE007E
                     )
-                    visible = raw_line.translate(_STRIP_TABLE).strip()
+                    visible = display_line.translate(_STRIP_TABLE).strip()
                     add_finding(
                         line=line_num,
                         column=first_tag + 1,
                         pattern=pattern,
-                        snippet=f"{visible} [hidden: {hidden_text}]"[:140],
+                        snippet=f"{visible} [hidden: {hidden_text}]",
                         raw_line=raw_line,
                         span=None,
                     )
@@ -1398,14 +1585,14 @@ def scan_file(path: Path) -> Iterator[Finding]:
                 continue
             raw_snippet = " / ".join(
                 line.strip()
-                for line in raw_lines[first_line - 1 : last_line]
+                for line in display_lines[first_line - 1 : last_line]
                 if line.strip()
             )
             add_finding(
                 line=first_line,
                 column=match.start() - line_starts[first] + 1,
                 pattern=pattern,
-                snippet=raw_snippet[:140],
+                snippet=raw_snippet,
                 raw_line=raw_lines[first_line - 1],
                 span=None,
             )

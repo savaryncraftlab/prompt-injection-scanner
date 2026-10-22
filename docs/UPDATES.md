@@ -1,5 +1,83 @@
 # Updates
 
+## v0.4.2 (2026-10-22) - Polish, secret-safe output, real-corpus precision
+
+### Why this update exists
+
+Three gaps: Polish attacks passed clean; scanning a project root printed
+lines of `.env` files into the terminal / CI log / `report.json`; and a run
+over a real research folder (40 files of Reddit threads and notes) gave 31
+findings, of which 30 were false.
+
+### Polish (and Ukrainian / Russian) coverage
+
+- `ignore_multilingual_latin`: `zignoruj`, `zlekceważ`, `zapomnij`,
+  `nie zwracaj uwagi na`, `nie przestrzegaj`, `nie stosuj się do` + an
+  instruction / rule / restriction noun (`instrukcje`, `polecenia`,
+  `wytyczne`, `zasady`, `reguły`, `ograniczenia`, `zabezpieczenia`). The case
+  endings are spelled out so "regularnie" / "zasadniczo" do not match.
+  Left out on purpose: `pomiń` ("Pomiń instrukcje instalacji, jeśli używasz
+  Dockera") and `odrzuć` ("odrzuć poprzednie zmiany"), and a bare
+  `poprzedni` with no instruction noun. A preceding `nie` / `no` / `ne` /
+  `nicht` turns a command into a reminder and is not flagged.
+- New `suppress_multilingual` (HIGH): "nie mów / nie informuj / nie
+  wspominaj ... użytkownikowi" and the UA / RU equivalents. "Show" is left
+  out ("nie pokazuj użytkownikowi surowych błędów" is security advice), and
+  the imperative must be a whole word ("aplikacja nie informuje
+  użytkownika" describes behavior).
+- New `silently_multilingual` (CRITICAL): "po cichu / dyskretnie /
+  potajemnie wyślij, usuń, odczytaj ..." and UA / RU ("тихо надішли").
+  `w tle` (in the background) is left out: "W tle uruchom serwer" is how
+  Polish docs say it.
+- `authority_multilingual`: "uwaga / notatka / komunikat od Anthropic",
+  "zweryfikowane przez (zespół) Anthropic". "Uwaga: wymaga konta Google"
+  is not matched.
+- `examples/16_polish_injection.md`, `tests/clean/README.pl.md`.
+
+### Secret-safe output
+
+- Files that hold secrets by nature (`.env*`, `credentials*`, `secrets*`,
+  `token*`, `password*`, `api_key*`, `*.pem` / `*.key`) are still scanned,
+  since a hidden instruction in a `.env` comment is exactly what this tool
+  looks for, but their snippets are masked: `KEY=value` keeps only the key,
+  `"key": "value"` pairs (including one-line JSON) lose the value, and any
+  20+ character key-shaped token is replaced. Comment lines keep their
+  words, so the injection itself stays readable.
+- `long_base64_block` snippets show `[base64 N chars]` in every file: the
+  blob may itself be a key.
+- A leading UTF-8 BOM (Notepad, PowerShell `Out-File`) is dropped on read
+  instead of being reported as a zero-width character on line 1.
+
+### Precision on a real corpus (30 of 31 findings were false)
+
+- `zero_width_char`: emoji ZWJ sequences (🤷🏻‍♂️), Persian / Indic ZWNJ, and
+  the ZWSP Reddit inserts at paragraph starts are legitimate. A zero-width
+  character is now reported only between two Latin / Cyrillic / Greek
+  letters or digits (`ig<ZWSP>nore`), in a run of two or more
+  (steganography), or when it is an invisible math operator.
+- `bracket_marker`: the keyword must be a header with content after it.
+  "the recruiter (internal) showed up" and "a tool(ai)" are prose;
+  `(ADMIN COMMAND: ...)` is now caught.
+- `suppress_disclosure`: the negation must open a clause (an order). "You
+  dont mention anything about salary" and "I would never tell anyone" are
+  stories; the idiom "keep it to yourself" is gone, "keep this from the
+  user" stays.
+- `without_asking`: a bare "without asking" needs an imperative action
+  before it ("proceed / do this / should be followed without asking").
+  "They stick it on our calendar without asking" is a story.
+- `goal_hijack`: "your real goal is" only; "the real goal is often to ..."
+  is prose about someone else.
+- `forget_synonyms`: "erase your household memory" no longer matches; the
+  object must be *your* / *all* instructions, guidance, context, memory.
+
+### Numbers
+
+- Real research folder (40 files): 31 → 1 finding (a `.env` mentioned in
+  prose, MEDIUM by design).
+- `examples/`: 97 → 104 (+6 Polish, +2 previously missed, −1 explanatory
+  sentence). Every file still fires.
+- Unit tests: 12 → 21. Clean corpus: 7 → 8 files, still zero findings.
+
 ## v0.4.1 (2026-10-22) - precision fix release
 
 ### Why this update exists
